@@ -5,6 +5,25 @@ from flask import Flask, jsonify, request, render_template_string
 app = Flask(__name__)
 DB_PATH = os.getenv("DB_PATH", "qa.db")
 
+# Always init DB on import (works with gunicorn too)
+def _ensure_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS qa (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            q_no    TEXT UNIQUE NOT NULL,
+            question TEXT NOT NULL,
+            answer   TEXT NOT NULL,
+            track    TEXT DEFAULT '',
+            lecture  TEXT DEFAULT '',
+            date_added TEXT DEFAULT ''
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+_ensure_db()
+
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def get_db():
@@ -217,6 +236,5 @@ def index():
 
 
 if __name__ == "__main__":
-    init_db()
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
