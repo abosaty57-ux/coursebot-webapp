@@ -5,25 +5,6 @@ from flask import Flask, jsonify, request, render_template_string
 app = Flask(__name__)
 DB_PATH = os.getenv("DB_PATH", "qa.db")
 
-# Always init DB on import (works with gunicorn too)
-def _ensure_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS qa (
-            id      INTEGER PRIMARY KEY AUTOINCREMENT,
-            q_no    TEXT UNIQUE NOT NULL,
-            question TEXT NOT NULL,
-            answer   TEXT NOT NULL,
-            track    TEXT DEFAULT '',
-            lecture  TEXT DEFAULT '',
-            date_added TEXT DEFAULT ''
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-_ensure_db()
-
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
 def get_db():
@@ -81,6 +62,28 @@ def get_filters():
         tracks   = [r[0] for r in conn.execute("SELECT DISTINCT track FROM qa WHERE track != '' ORDER BY track").fetchall()]
         lectures = [r[0] for r in conn.execute("SELECT DISTINCT lecture FROM qa WHERE lecture != '' ORDER BY lecture").fetchall()]
     return jsonify({"tracks": tracks, "lectures": lectures})
+
+
+@app.route("/api/sync", methods=["POST"])
+def sync_all():
+    secret = request.headers.get("X-Secret")
+    if secret != os.getenv("WEBAPP_SECRET", ""):
+        return jsonify({"error": "unauthorized"}), 401
+    data = request.json
+    rows = data.get("rows", [])
+    try:
+        with get_db() as conn:
+            conn.execute("DELETE FROM qa")
+            for row in rows:
+                conn.execute(
+                    "INSERT INTO qa (q_no, question, answer, track, lecture, date_added) VALUES (?,?,?,?,?,?)",
+                    (row["q_no"], row["question"], row["answer"],
+                     row.get("track", ""), row.get("lecture", ""), row.get("date_added", ""))
+                )
+            conn.commit()
+        return jsonify({"ok": True, "count": len(rows)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/add", methods=["POST"])
@@ -236,5 +239,6 @@ def index():
 
 
 if __name__ == "__main__":
+    init_db()
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
