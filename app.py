@@ -69,6 +69,7 @@ def sync_all():
     secret = request.headers.get("X-Secret")
     if secret != os.getenv("WEBAPP_SECRET", ""):
         return jsonify({"error": "unauthorized"}), 401
+    _ensure_db()
     data = request.json
     rows = data.get("rows", [])
     try:
@@ -91,7 +92,7 @@ def add_qa():
     secret = request.headers.get("X-Secret")
     if secret != os.getenv("WEBAPP_SECRET", ""):
         return jsonify({"error": "unauthorized"}), 401
-
+    _ensure_db()
     data = request.json
     try:
         with get_db() as conn:
