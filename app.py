@@ -6,39 +6,38 @@ app = Flask(__name__)
 DB_PATH = os.getenv("DB_PATH", "qa.db")
 
 
-# ── DB helpers ────────────────────────────────────────────────────────────────
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def init_db():
-    with get_db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS qa (
-                id      INTEGER PRIMARY KEY AUTOINCREMENT,
-                q_no    TEXT UNIQUE NOT NULL,
-                question TEXT NOT NULL,
-                answer   TEXT NOT NULL,
-                track    TEXT DEFAULT '',
-                lecture  TEXT DEFAULT '',
-                date_added TEXT DEFAULT ''
-            )
-        """)
-        conn.commit()
+def ensure_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS qa (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            q_no       TEXT UNIQUE NOT NULL,
+            question   TEXT NOT NULL,
+            answer     TEXT NOT NULL,
+            track      TEXT DEFAULT '',
+            lecture    TEXT DEFAULT '',
+            date_added TEXT DEFAULT ''
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+ensure_db()
 
 
-# ── API endpoints ─────────────────────────────────────────────────────────────
 @app.route("/api/qa")
 def get_qa():
     track   = request.args.get("track", "").strip()
     lecture = request.args.get("lecture", "").strip()
     search  = request.args.get("search", "").strip()
-
-    query  = "SELECT * FROM qa WHERE 1=1"
-    params = []
-
+    query   = "SELECT * FROM qa WHERE 1=1"
+    params  = []
     if track:
         query += " AND track = ?"
         params.append(track)
@@ -48,9 +47,7 @@ def get_qa():
     if search:
         query += " AND (question LIKE ? OR answer LIKE ?)"
         params.extend([f"%{search}%", f"%{search}%"])
-
     query += " ORDER BY id DESC"
-
     with get_db() as conn:
         rows = conn.execute(query, params).fetchall()
     return jsonify([dict(r) for r in rows])
@@ -69,19 +66,20 @@ def sync_all():
     secret = request.headers.get("X-Secret")
     if secret != os.getenv("WEBAPP_SECRET", ""):
         return jsonify({"error": "unauthorized"}), 401
-    _ensure_db()
+    ensure_db()
     data = request.json
     rows = data.get("rows", [])
     try:
-        with get_db() as conn:
-            conn.execute("DELETE FROM qa")
-            for row in rows:
-                conn.execute(
-                    "INSERT INTO qa (q_no, question, answer, track, lecture, date_added) VALUES (?,?,?,?,?,?)",
-                    (row["q_no"], row["question"], row["answer"],
-                     row.get("track", ""), row.get("lecture", ""), row.get("date_added", ""))
-                )
-            conn.commit()
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("DELETE FROM qa")
+        for row in rows:
+            conn.execute(
+                "INSERT INTO qa (q_no, question, answer, track, lecture, date_added) VALUES (?,?,?,?,?,?)",
+                (row["q_no"], row["question"], row["answer"],
+                 row.get("track", ""), row.get("lecture", ""), row.get("date_added", ""))
+            )
+        conn.commit()
+        conn.close()
         return jsonify({"ok": True, "count": len(rows)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -92,22 +90,22 @@ def add_qa():
     secret = request.headers.get("X-Secret")
     if secret != os.getenv("WEBAPP_SECRET", ""):
         return jsonify({"error": "unauthorized"}), 401
-    _ensure_db()
+    ensure_db()
     data = request.json
     try:
-        with get_db() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO qa (q_no, question, answer, track, lecture, date_added) VALUES (?,?,?,?,?,?)",
-                (data["q_no"], data["question"], data["answer"],
-                 data.get("track", ""), data.get("lecture", ""), data.get("date_added", ""))
-            )
-            conn.commit()
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            "INSERT OR REPLACE INTO qa (q_no, question, answer, track, lecture, date_added) VALUES (?,?,?,?,?,?)",
+            (data["q_no"], data["question"], data["answer"],
+             data.get("track", ""), data.get("lecture", ""), data.get("date_added", ""))
+        )
+        conn.commit()
+        conn.close()
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
-# ── Mini App HTML ─────────────────────────────────────────────────────────────
 HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -153,18 +151,16 @@ HTML = """<!DOCTYPE html>
 <body>
 <h1>📚 Q&A Reference</h1>
 <div class="filters">
-  <input type="text" id="search" placeholder="🔍 Search questions or answers…" oninput="debounceLoad()">
+  <input type="text" id="search" placeholder="🔍 Search..." oninput="debounceLoad()">
   <select id="track" onchange="loadQA()"><option value="">All Tracks</option></select>
   <select id="lecture" onchange="loadQA()"><option value="">All Lectures</option></select>
   <button onclick="clearFilters()">✕ Clear</button>
 </div>
 <div class="count" id="count"></div>
 <div id="results"><div class="loading">Loading…</div></div>
-
 <script>
 let debounceTimer;
 function debounceLoad() { clearTimeout(debounceTimer); debounceTimer = setTimeout(loadQA, 400); }
-
 async function loadFilters() {
   const res = await fetch('/api/filters');
   const { tracks, lectures } = await res.json();
@@ -173,7 +169,6 @@ async function loadFilters() {
   tracks.forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = t; ts.appendChild(o); });
   lectures.forEach(l => { const o = document.createElement('option'); o.value = l; o.textContent = l; ls.appendChild(o); });
 }
-
 async function loadQA() {
   const search  = document.getElementById('search').value.trim();
   const track   = document.getElementById('track').value;
@@ -182,19 +177,14 @@ async function loadQA() {
   if (search)  params.set('search', search);
   if (track)   params.set('track', track);
   if (lecture) params.set('lecture', lecture);
-
   document.getElementById('results').innerHTML = '<div class="loading">Loading…</div>';
   const res  = await fetch('/api/qa?' + params.toString());
   const data = await res.json();
   render(data);
 }
-
 function render(data) {
   document.getElementById('count').textContent = data.length + ' result' + (data.length !== 1 ? 's' : '');
-  if (!data.length) {
-    document.getElementById('results').innerHTML = '<div class="empty">No results found 🤷</div>';
-    return;
-  }
+  if (!data.length) { document.getElementById('results').innerHTML = '<div class="empty">No results found 🤷</div>'; return; }
   document.getElementById('results').innerHTML = data.map((q, i) => `
     <div class="card">
       <div class="card-header">
@@ -210,24 +200,18 @@ function render(data) {
     </div>
   `).join('');
 }
-
 function toggle(i) {
   const el = document.getElementById('ans-' + i);
   const btn = el.nextElementSibling;
-  if (el.classList.contains('collapsed')) {
-    el.classList.remove('collapsed'); btn.textContent = 'Show less ▲';
-  } else {
-    el.classList.add('collapsed'); btn.textContent = 'Show more ▼';
-  }
+  if (el.classList.contains('collapsed')) { el.classList.remove('collapsed'); btn.textContent = 'Show less ▲'; }
+  else { el.classList.add('collapsed'); btn.textContent = 'Show more ▼'; }
 }
-
 function clearFilters() {
   document.getElementById('search').value = '';
   document.getElementById('track').value = '';
   document.getElementById('lecture').value = '';
   loadQA();
 }
-
 loadFilters();
 loadQA();
 </script>
@@ -238,8 +222,6 @@ loadQA();
 def index():
     return render_template_string(HTML)
 
-
 if __name__ == "__main__":
-    init_db()
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
